@@ -1,12 +1,15 @@
-import { guideSections, flashcards, quizQuestions, scenarios } from "./data/epeeContent.js";
-import { actions, drillActions, actionAliases, keyToAction, distanceNames, opponentTypes, avatarIcons } from "./data/gameConfig.js";
+import { guideSections, flashcards, quizQuestions, scenarioPacks, scenarios } from "./data/epeeContent.js";
+import { actions, drillActions, actionAliases, keyToAction, distanceNames, opponentTypes, avatarIcons, avatarOptions } from "./data/gameConfig.js";
 import { skillCatalog } from "./data/skillData.js";
+import { trainingPaths } from "./data/trainingPaths.js";
 import { $, els } from "./ui/dom.js";
 import { renderLearningPanels as renderLearningPanelsUi, renderMatch as renderMatchUi, renderSequenceBuilder as renderSequenceBuilderUi, setMatchView, showMatchSetup } from "./ui/renderMatch.js";
 import { renderFlashcard as renderFlashcardUi, renderGuide as renderGuideUi, renderQuiz as renderQuizUi, renderScenario as renderScenarioUi } from "./ui/renderTraining.js";
 import { renderProfile as renderProfileUi, renderProgress as renderProgressUi, renderSkillTree as renderSkillTreeUi, showProfileSetupIfNeeded as showProfileSetupIfNeededUi } from "./ui/renderProfile.js";
+import { renderTrainingPath as renderTrainingPathUi } from "./ui/renderTrainingPath.js";
 import * as progressManager from "./core/progressManager.js";
-import { actionMeta, adjustDistanceForAi as adjustDistanceForAiCore, adjustMatchDistance as adjustMatchDistanceCore, reverseMatchDistance as reverseMatchDistanceCore, finalActionFromSequence, isActionUnlocked as isActionUnlockedAtLevel, isFinishAction, riskLabel, sequenceRisk } from "./core/gameEngine.js";
+import { evaluateTrainingPaths, isStepComplete, nextStep as nextTrainingStep, pathForExperience, pathProgress, setActivePath, setStepComplete } from "./core/trainingPathManager.js";
+import { actionCommitment, actionMeta, adjustDistanceForAi as adjustDistanceForAiCore, adjustMatchDistance as adjustMatchDistanceCore, evaluatePlanQuality, finalActionFromSequence, isActionUnlocked as isActionUnlockedAtLevel, isFinishAction, opponentState, reverseMatchDistance as reverseMatchDistanceCore, riskLabel, sequenceCommitment, sequenceRisk } from "./core/gameEngine.js";
 import { opponentSequenceLabel } from "./core/aiOpponent.js";
 
 const defaultProgress = progressManager.defaultProgress;
@@ -18,14 +21,20 @@ const state = {
   quizIndex: 0,
   quizScore: 0,
   scenarioDifficulty: "Beginner",
+  scenarioPack: "all",
   scenarioIndex: 0,
   controlMode: "simple",
-  match: { player: 0, opponent: 0, round: 1, tactical: 0, distanceScore: 0, timing: 0, distance: 3, locked: false, over: false, type: "aggressive", mode: "training", aiDifficulty: "beginner", learningMode: "beginner", tournamentStage: 1, situation: null, sequence: [], appliedSequenceLength: 0, setupDistanceStack: [], pendingAiAction: null, planHint: "", liveCue: "", previous: [], history: [], replaySnapshot: null, lastAiAction: null, lastAdjustment: "No adjustment yet." }
+  match: { player: 0, opponent: 0, round: 1, tactical: 0, distanceScore: 0, timing: 0, distance: 3, locked: false, over: false, type: "aggressive", mode: "training", aiDifficulty: "beginner", learningMode: "beginner", tournamentStage: 1, situation: null, sequence: [], appliedSequenceLength: 0, setupDistanceStack: [], pendingAiAction: null, planHint: "", liveCue: "", previous: [], history: [], replaySnapshot: null, lastAiAction: null, lastAdjustment: "No adjustment yet." },
+  duel: null
 };
+
+let duelTimer = null;
+let pendingAvatarId = null;
 
 const saveProgress = () => {
   state.progress = progressManager.saveProgress(state.progress);
   renderProgress();
+  renderTrainingPath();
 };
 
 const normalizeProgress = (progress) => progressManager.normalizeProgress(progress);
@@ -46,8 +55,12 @@ function profileRenderContext() {
     els,
     state,
     avatarIcons,
+    avatarOptions,
     skillCatalog,
-    profileAvatarName,
+    profileAvatarId,
+    avatarById,
+    isAvatarUnlocked,
+    pendingAvatarId,
     xpInLevel,
     level,
     accuracy,
@@ -70,16 +83,38 @@ function createProfile(data) {
     goal: data.goal,
     style: data.style,
     avatar: "Beginner Fencer",
+    avatarId: data.avatarId || "classic-epee",
     createdAt: new Date().toISOString()
   };
+  if (!Object.keys(state.progress.trainingPath?.completedSteps || {}).length) {
+    setActivePath(state.progress, pathForExperience(data.experience));
+  }
   saveProgress();
 }
 
-function profileAvatarName() {
-  const current = state.progress.profile?.avatar || "Beginner Fencer";
-  if (level() >= 10 && current === "Beginner Fencer") return "Champion Fencer";
-  if (level() >= 5 && current === "Beginner Fencer") return "Tactical Fencer";
-  return current;
+function profileAvatarId() {
+  return state.progress.profile?.avatarId || "classic-epee";
+}
+
+function avatarById(id) {
+  return avatarOptions.find((avatar) => avatar.id === id) || avatarOptions[0];
+}
+
+function isAvatarUnlocked(avatar) {
+  if (!avatar || avatar.unlock.type === "always") return true;
+  if (avatar.unlock.type === "level") return level() >= avatar.unlock.level;
+  if (avatar.unlock.type === "path") return state.progress.trainingPath.completedPaths.includes(avatar.unlock.pathId);
+  return false;
+}
+
+function setProfileAvatar(avatarId) {
+  if (!state.progress.profile) return false;
+  const avatar = avatarById(avatarId);
+  if (!isAvatarUnlocked(avatar)) return false;
+  state.progress.profile.avatarId = avatar.id;
+  state.progress.profile.avatar = avatar.name;
+  saveProgress();
+  return true;
 }
 
 function grantXp(amount, skillUpdates = {}, source = "Training") {
@@ -152,16 +187,182 @@ function showXpToast(amount, source) {
   els.levelToast.classList.add("show");
 }
 
+function trainingPathRenderContext() {
+  return {
+    els,
+    state,
+    trainingPaths,
+    pathProgress,
+    nextStep: nextTrainingStep,
+    isStepComplete
+  };
+}
+
 const renderProgress = () => renderProgressUi(profileRenderContext());
 const renderProfile = () => renderProfileUi(profileRenderContext());
 const renderSkillTree = () => renderSkillTreeUi(profileRenderContext());
+const renderTrainingPath = () => renderTrainingPathUi(trainingPathRenderContext());
 const showProfileSetupIfNeeded = () => showProfileSetupIfNeededUi(profileRenderContext());
+
+function awardTrainingPathReward(pathId, step, source = "Training Path Step") {
+  const rewardKey = `${pathId}:${step.id}`;
+  if (state.progress.trainingPath.stepRewardsClaimed.includes(rewardKey)) return;
+  state.progress.trainingPath.stepRewardsClaimed.push(rewardKey);
+  grantXp(step.reward, step.skills, source);
+}
+
+function awardTrainingPathCompletion(pathId, path) {
+  if (state.progress.trainingPath.pathRewardsClaimed.includes(pathId)) return;
+  state.progress.trainingPath.pathRewardsClaimed.push(pathId);
+  grantXp(50, { tacticalIq: 10, mentalGame: 10, matchExperience: 10 }, `${path.title} Complete`);
+}
+
+function checkTrainingPathProgress() {
+  const completions = evaluateTrainingPaths(state.progress);
+  completions.forEach((completion) => {
+    if (completion.type === "step") awardTrainingPathReward(completion.pathId, completion.step);
+    if (completion.type === "path") awardTrainingPathCompletion(completion.pathId, completion.path);
+  });
+  state.progress = progressManager.saveProgress(state.progress);
+  renderTrainingPath();
+  renderProgress();
+}
+
+function completeTrainingPathStep(pathId, stepId) {
+  const path = trainingPaths[pathId];
+  const step = path?.steps.find((item) => item.id === stepId);
+  if (!step) return;
+  setStepComplete(state.progress, pathId, stepId);
+  awardTrainingPathReward(pathId, step, "Training Path Manual Completion");
+  checkTrainingPathProgress();
+}
+
+function trackGuideView() {
+  const stats = state.progress.trainingPath.stats;
+  const guideStepByPath = {
+    beginner: "guide-fundamentals",
+    intermediate: "guide-distance",
+    advanced: "guide-tactics"
+  };
+  const guideStep = guideStepByPath[state.progress.trainingPath.activePath] || "guide-fundamentals";
+  if (!stats.guideViews.includes(guideStep)) stats.guideViews.push(guideStep);
+  checkTrainingPathProgress();
+}
+
+function trackFlashcardProgress() {
+  state.progress.trainingPath.stats.flashcardsMastered = state.progress.mastered.length;
+  checkTrainingPathProgress();
+}
+
+function trackScenarioComplete(scenario) {
+  const stats = state.progress.trainingPath.stats.scenarios;
+  stats[scenario.difficulty] = (stats[scenario.difficulty] || 0) + 1;
+  checkTrainingPathProgress();
+}
+
+function trackQuizComplete(question, questionNumber, totalQuestions) {
+  if (questionNumber !== totalQuestions) return;
+  const stats = state.progress.trainingPath.stats.quizCompleted;
+  stats[question.difficulty] = (stats[question.difficulty] || 0) + 1;
+  checkTrainingPathProgress();
+}
+
+function trackAiMatchProgress() {
+  const stats = state.progress.trainingPath.stats;
+  stats.aiMatches += 1;
+  if (!stats.aiOpponentTypes.includes(state.match.type)) stats.aiOpponentTypes.push(state.match.type);
+  checkTrainingPathProgress();
+}
+
+function trackLocalDuelProgress(matchComplete = false) {
+  const stats = state.progress.trainingPath.stats;
+  stats.localDuelExchanges += 1;
+  if (matchComplete) stats.localDuelMatches += 1;
+  checkTrainingPathProgress();
+}
+
+function trackProgressReview(viewId) {
+  if (viewId === "progress") state.progress.trainingPath.stats.progressReviewed = true;
+  if (viewId === "development") state.progress.trainingPath.stats.skillTreeReviewed = true;
+  if (viewId === "progress" || viewId === "development") checkTrainingPathProgress();
+}
+
+function difficultyFromTrainingStep(stepId) {
+  if (stepId.includes("advanced")) return "Advanced";
+  if (stepId.includes("intermediate")) return "Intermediate";
+  return "Beginner";
+}
+
+function navigateTrainingStep(stepId, fallbackView = "hub") {
+  if (stepId.startsWith("scenarios-")) {
+    const difficulty = difficultyFromTrainingStep(stepId);
+    state.scenarioDifficulty = difficulty;
+    state.scenarioPack = "all";
+    state.scenarioIndex = 0;
+    els.scenarioDifficulty.value = difficulty;
+    els.scenarioPack.value = "all";
+    renderScenario();
+    showView("scenarios");
+    return;
+  }
+
+  if (stepId.startsWith("quiz-")) {
+    const difficulty = difficultyFromTrainingStep(stepId);
+    state.quizDifficulty = difficulty;
+    state.quizIndex = 0;
+    state.quizScore = 0;
+    els.quizDifficulty.value = difficulty;
+    renderQuiz();
+    showView("quiz");
+    return;
+  }
+
+  if (stepId.startsWith("ai-")) {
+    els.simulatorMode.value = "ai";
+    updateSimulatorSetupMode();
+    showMatchSetup();
+    showView("match");
+    return;
+  }
+
+  if (stepId.startsWith("local-duel")) {
+    els.simulatorMode.value = "duel";
+    updateSimulatorSetupMode();
+    showMatchSetup();
+    showView("match");
+    return;
+  }
+
+  if (stepId.startsWith("guide-")) {
+    showView("guide");
+    return;
+  }
+
+  if (stepId.startsWith("flashcards")) {
+    showView("flashcards");
+    return;
+  }
+
+  if (stepId === "progress-review" || stepId === "rating-70") {
+    showView("progress");
+    return;
+  }
+
+  if (stepId === "skill-tree-review") {
+    showView("development");
+    return;
+  }
+
+  showView(fallbackView);
+}
 
 function showView(id) {
   els.views.forEach((view) => view.classList.toggle("active", view.id === id));
   document.querySelectorAll(".nav-btn").forEach((btn) => btn.classList.toggle("active", btn.dataset.view === id));
   els.mainNav.classList.remove("open");
   els.menuToggle.setAttribute("aria-expanded", "false");
+  if (id === "guide") trackGuideView();
+  trackProgressReview(id);
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -172,12 +373,15 @@ function trainingRenderContext() {
     guideSections,
     flashcards,
     quizQuestions,
+    scenarioPacks,
     scenarios,
     actions,
     currentQuizPool,
     scenarioPool,
     grantXp,
-    saveProgress
+    saveProgress,
+    trackQuizComplete,
+    trackScenarioComplete
   };
 }
 
@@ -198,7 +402,11 @@ function currentQuizPool() {
 const renderQuiz = () => renderQuizUi(trainingRenderContext());
 
 function scenarioPool() {
-  return scenarios.filter((s) => s.difficulty === state.scenarioDifficulty);
+  return scenarios.filter((s) => {
+    const difficultyMatch = s.difficulty === state.scenarioDifficulty;
+    const packMatch = state.scenarioPack === "all" || s.packId === state.scenarioPack;
+    return difficultyMatch && packMatch;
+  });
 }
 
 const renderScenario = () => renderScenarioUi(trainingRenderContext());
@@ -223,6 +431,7 @@ function matchRenderContext() {
     riskLabel,
     recommendedSequence,
     isFinishAction,
+    finalActionFromSequence,
     actionMeta,
     isActionUnlocked,
     actionCue,
@@ -231,11 +440,84 @@ function matchRenderContext() {
   };
 }
 
-const renderMatch = () => renderMatchUi(matchRenderContext());
+function ensureFencerSprites() {
+  [
+    [els.youFencer, "Player epee fencer", true],
+    [els.themFencer, "Opponent epee fencer", false],
+    [els.duelP1Fencer, "Player 1 epee fencer", true],
+    [els.duelP2Fencer, "Player 2 epee fencer", false]
+  ].forEach(([fencer, label, mirrored]) => {
+    if (!fencer) return;
+    fencer.style.opacity = "1";
+    fencer.style.visibility = "visible";
+    fencer.style.zIndex = "6";
+    fencer.style.display = "inline-flex";
+    fencer.style.alignItems = "center";
+    fencer.style.justifyContent = "center";
+    fencer.querySelectorAll(".epee").forEach((blade) => {
+      blade.setAttribute("aria-hidden", "true");
+      blade.style.display = "none";
+    });
+
+    let sprite = fencer.querySelector(".fencer-sprite");
+    if (!sprite) {
+      sprite = fencer.querySelector(".body") || document.createElement("span");
+      fencer.append(sprite);
+    }
+    sprite.classList.add("body", "fencer-sprite");
+    sprite.setAttribute("role", "img");
+    sprite.setAttribute("aria-label", label);
+    sprite.dataset.sprite = "🤺";
+    sprite.style.display = "inline-flex";
+    sprite.style.alignItems = "center";
+    sprite.style.justifyContent = "center";
+    sprite.style.minWidth = "clamp(132px, 14vw, 190px)";
+    sprite.style.minHeight = "clamp(96px, 10vw, 132px)";
+    sprite.style.fontFamily = "\"Apple Color Emoji\", \"Segoe UI Emoji\", \"Noto Color Emoji\", sans-serif";
+    sprite.style.fontSize = "clamp(4rem, 8.5vw, 7rem)";
+    sprite.style.lineHeight = "1";
+    sprite.style.opacity = "1";
+    sprite.style.visibility = "visible";
+    sprite.style.color = "initial";
+    sprite.style.background = "transparent";
+    sprite.style.overflow = "visible";
+    sprite.style.transform = mirrored ? "scaleX(-1)" : "scaleX(1)";
+
+    let image = sprite.querySelector(".sprite-fallback");
+    if (!image) {
+      image = document.createElement("img");
+      image.className = "sprite-fallback";
+      image.alt = "";
+      sprite.prepend(image);
+    }
+    image.src = "./assets/fencer-sprite.png";
+    image.style.display = "block";
+    image.style.width = "clamp(132px, 14vw, 190px)";
+    image.style.height = "auto";
+    image.style.maxWidth = "none";
+    image.style.objectFit = "contain";
+    image.style.pointerEvents = "none";
+
+    let fallback = sprite.querySelector(".emoji-fallback");
+    if (!fallback) {
+      fallback = document.createElement("span");
+      fallback.className = "emoji-fallback";
+      sprite.append(fallback);
+    }
+    fallback.textContent = "🤺";
+  });
+}
+
+const renderMatch = () => {
+  ensureFencerSprites();
+  renderMatchUi(matchRenderContext());
+};
 
 function returnToMatchSetup() {
+  stopDuelTimer();
   state.match.locked = true;
   state.match.over = true;
+  if (state.duel) state.duel.active = false;
   els.nextExchange.classList.remove("show");
   els.replayExchange.disabled = true;
   showMatchSetup();
@@ -290,8 +572,8 @@ function shortPlanHint(sequence) {
   if (!sequence.length) return "Choose a setup";
   if (sequence.length >= 3 && !sequence.some(isFinishAction)) return "Finish now";
   if (sequence.some(isFinishAction)) return "Resolving";
-  const risk = sequenceRisk(sequence);
-  if (risk >= 5) return "Risky distance";
+  const commitment = sequenceCommitment(sequence);
+  if (commitment >= 5) return "High commitment";
   if (sequence.some((action) => ["Feint", "Bait", "Beat", "Change Rhythm", "Half Step In", "Half Step Out"].includes(action))) return "Good setup";
   return "Choose a finish";
 }
@@ -358,7 +640,8 @@ function handleSetupAction(action) {
   const sequence = [...m.sequence];
   const tacticalAction = actionAliases[action] || action;
   const aiReaction = chooseAiAction(tacticalAction, sequence);
-  const createsCommitment = ["Bait", "Invite Attack"].includes(action) || opponentShowingAttackCue();
+  const setupCommitment = actionCommitment(action);
+  const createsCommitment = ["Bait", "Invite Attack"].includes(action) || sequenceCommitment(sequence) >= 4 || opponentShowingAttackCue();
   const opponentCommitted = m.pendingAiAction === "Attack" || (aiReaction === "Attack" && createsCommitment);
   const distanceBeforeSetup = m.distance;
 
@@ -368,11 +651,11 @@ function handleSetupAction(action) {
 
   if (aiReaction === "Attack" && createsCommitment) {
     m.pendingAiAction = "Attack";
-    m.liveCue = "Opponent committed";
+    m.liveCue = "Opponent attacking";
   } else if (aiReaction === "Attack") {
-    m.liveCue = "Opponent threatening";
+    m.liveCue = setupCommitment >= 2 ? "Opponent pressuring" : "Opponent threatening";
   } else {
-    m.liveCue = aiReaction === "Retreat" ? "Opponent took distance" : aiReaction === "Feint" ? "Opponent reacted" : "Opponent preparing";
+    m.liveCue = aiReaction === "Retreat" ? "Opponent retreating" : aiReaction === "Feint" ? "Opponent feinting" : opponentState(aiReaction);
   }
 
   if (opponentCommitted && isCommittedDefense(action)) {
@@ -382,11 +665,14 @@ function handleSetupAction(action) {
 
   if (aiReaction !== "Attack") adjustDistanceForAi(aiReaction);
   m.setupDistanceStack = [...(m.setupDistanceStack || []), distanceBeforeSetup];
+  const plan = evaluatePlanQuality(sequence, aiReaction, distanceBeforeSetup, m);
   m.planHint = sequence.length >= 3
     ? "Distance changed. Choose a finishing action or continue setting up."
     : opponentCommitted
       ? "Opponent committed. React or finish."
-      : "Distance changed. Choose a finishing action or continue setting up.";
+      : plan.quality >= 4
+        ? "Setup improved. Choose the right finish."
+        : "Distance changed. Choose a finishing action or continue setting up.";
   renderMatch();
 }
 
@@ -617,6 +903,9 @@ function chooseAiAction(playerAction, sequence = [playerAction]) {
   const hasDuck = false;
   const hasBigFinish = sequence.some((action) => ["Step-Lunge", "Fleche"].includes(action));
   const recentSequences = m.history.slice(-3).map((entry) => entry.sequence || entry.player);
+  const retreatHabit = recentSequences.filter((item) => /Retreat|Half Step Out|Hold Distance/.test(item)).length >= 2;
+  const feintHabit = recentSequences.filter((item) => item.includes("Feint")).length >= 2;
+  const advanceBeforeAttackHabit = m.history.slice(-4).filter((entry) => /Advance.*(Lunge|Step-Lunge|Fleche)/.test(entry.sequence || entry.player)).length >= 2;
 
   if (m.distance >= 5) {
     weights.Attack -= 10;
@@ -660,10 +949,26 @@ function chooseAiAction(playerAction, sequence = [playerAction]) {
   if (recentSequences.filter((item) => item.includes("Feint")).length >= 2) {
     weights["Hold Distance"] += 18;
     weights.Counterattack += 12;
+    weights.Attack += difficulty === "advanced" ? 12 : 4;
   }
   if (recentSequences.filter((item) => item.includes("Bait")).length >= 2) {
     weights.Retreat += 18;
     weights["Hold Distance"] += 12;
+  }
+  if (retreatHabit) {
+    weights.Attack += difficulty === "advanced" ? 18 : 10;
+    weights.Feint += 8;
+    weights.Retreat -= 8;
+    weights["Hold Distance"] -= 6;
+  }
+  if (feintHabit) {
+    weights.Attack += difficulty === "advanced" ? 12 : 5;
+    weights["Hold Distance"] += 8;
+  }
+  if (advanceBeforeAttackHabit) {
+    weights.Counterattack += difficulty === "advanced" ? 24 : 14;
+    weights.Retreat += 14;
+    weights.Feint += 8;
   }
   if (difficulty === "beginner") {
     weights[type.weights.Attack >= 30 ? "Attack" : "Hold Distance"] += 8;
@@ -708,8 +1013,11 @@ function chooseAiAction(playerAction, sequence = [playerAction]) {
 
 function determineAiAdjustment(playerAction, aiAction, sequence = [playerAction]) {
   const [common, count] = mostCommonAction("player");
+  const recentSequences = state.match.history.slice(-4).map((entry) => entry.sequence || entry.player);
   if (common === "Counterattack" && count >= 3) return "Opponent begins using feints to draw out your counterattack.";
   if (["Lunge", "Fleche"].includes(common) && count >= 3) return "Opponent starts retreating and counterattacking your predictable attacks.";
+  if (recentSequences.filter((item) => /Retreat|Half Step Out|Hold Distance/.test(item)).length >= 2) return "Opponent notices you are giving ground and starts taking space with pressure.";
+  if (recentSequences.filter((item) => /Advance.*(Lunge|Step-Lunge|Fleche)/.test(item)).length >= 2) return "Opponent recognizes your advance-before-attack rhythm and prepares to retreat or counterattack.";
   if (sequence.includes("Feint") && state.match.history.filter((entry) => (entry.sequence || "").includes("Feint")).length >= 2) return "Opponent is starting to ignore repeated feints and wait for the real attack.";
   if (sequence.includes("Bait") && state.match.history.filter((entry) => (entry.sequence || "").includes("Bait")).length >= 2) return "Opponent is refusing the bait and taking distance instead.";
   if (sequence.some((action) => ["Step-Lunge", "Fleche"].includes(action))) return "Opponent is preparing to retreat and counter if your big finish becomes predictable.";
@@ -731,6 +1039,9 @@ function executeQueuedSequence(forcedAiAction = null) {
   const distanceBefore = m.distance;
   const aiAction = forcedAiAction || m.pendingAiAction || chooseAiAction(playerAction, sequence);
   const result = resolveSequenceExchange(sequence, playerAction, aiAction);
+  result.planLabel = sequenceLabel;
+  result.opponentLabel = opponentSequenceLabel(aiAction, sequence);
+  result.resultLabel = result.playerTouch && result.opponentTouch ? "Double touch" : result.playerTouch ? "Player touch" : result.opponentTouch ? "Opponent touch" : result.title.includes("MISS") || result.title.includes("SHORT") ? "Miss" : "No-touch reset";
   const adjustment = determineAiAdjustment(playerAction, aiAction, sequence);
   m.lastAdjustment = adjustment;
   m.lastAiAction = aiAction;
@@ -739,6 +1050,10 @@ function executeQueuedSequence(forcedAiAction = null) {
   m.timing += result.scores.timing;
   if (result.playerTouch) m.player += 1;
   if (result.opponentTouch) m.opponent += 1;
+  if (m.mode === "training" && !m.pathAiRecorded) {
+    m.pathAiRecorded = true;
+    trackAiMatchProgress();
+  }
   animateScore(result.playerTouch, result.opponentTouch);
   m.locked = true;
   m.previous.push(sequenceLabel);
@@ -747,13 +1062,13 @@ function executeQueuedSequence(forcedAiAction = null) {
   sequence.slice(m.appliedSequenceLength || 0).forEach((action) => adjustMatchDistance(action));
   adjustDistanceForAi(aiAction);
   lockMatchButtons(sequence);
-  animateExchange(playerAction, aiAction, result.playerTouch, result.opponentTouch);
+  animateExchange(playerAction, aiAction, result.playerTouch, result.opponentTouch, result.resultLabel, result.title);
 
   els.matchFeedback.innerHTML = buildMatchFeedback(result, aiAction);
   els.analysisOutcome.textContent = result.title;
   els.analysisPlayerAction.textContent = sequenceLabel;
   els.analysisOpponentAction.textContent = opponentSequenceLabel(aiAction, sequence);
-  els.analysisResult.textContent = result.playerTouch && result.opponentTouch ? "Double touch" : result.playerTouch ? "Player touch" : result.opponentTouch ? "Opponent touch" : "No touch";
+  els.analysisResult.textContent = result.resultLabel;
   els.analysisTacticalPoints.textContent = result.scores.tactical > 0 ? `+${result.scores.tactical}` : result.scores.tactical;
   els.analysisSkillXp.textContent = skillXpText || "Review XP";
   els.matchFeedback.classList.add("show");
@@ -773,9 +1088,15 @@ function executeQueuedSequence(forcedAiAction = null) {
 function buildMatchFeedback(result, aiAction) {
   const poorDecision = result.scores.tactical < 0 || (result.opponentTouch && !result.playerTouch);
   const betterLine = poorDecision ? `<p><b>Better option:</b> ${result.better}</p>` : "";
+  const phraseHeader = `
+    <p><b>Your plan:</b> ${result.planLabel || "Hold Distance"}</p>
+    <p><b>Opponent:</b> ${result.opponentLabel || opponentState(aiAction)}</p>
+    <p><b>Result:</b> ${result.resultLabel || result.title}</p>
+  `;
   if (state.match.mode === "ranked") {
     return `
       <strong>EXCHANGE RESULT</strong>
+      ${phraseHeader}
       <p><b>What happened:</b> ${result.what}</p>
       <p><b>Why:</b> ${result.why}</p>
       ${betterLine}
@@ -785,6 +1106,7 @@ function buildMatchFeedback(result, aiAction) {
   if (state.match.mode === "tournament") {
     return `
       <strong>TOURNAMENT EXCHANGE</strong>
+      ${phraseHeader}
       <p><b>What happened:</b> ${result.what}</p>
       <p><b>Why:</b> ${result.why}</p>
       ${betterLine}
@@ -793,6 +1115,7 @@ function buildMatchFeedback(result, aiAction) {
   }
   return `
     <strong>EXCHANGE RESULT</strong>
+    ${phraseHeader}
     <p><b>What happened:</b> ${result.what}</p>
     <p><b>Why:</b> ${result.why}</p>
     ${betterLine}
@@ -823,6 +1146,7 @@ function shouldEndBout() {
 function resolveSequenceExchange(sequence, playerAction, aiAction) {
   const result = resolveTacticalExchange(playerAction, aiAction);
   const risk = sequenceRisk(sequence);
+  const plan = evaluatePlanQuality(sequence, aiAction, state.match.distance, state.match);
   const hasPrep = sequence.some((action) => ["Feint", "Beat", "Bait", "Change Rhythm"].includes(action));
   const hasFootPrep = sequence.some((action) => ["Half Step In", "Half Step Out", "Advance", "Retreat"].includes(action));
   const hasFinish = sequence.some(isFinishAction);
@@ -831,6 +1155,7 @@ function resolveSequenceExchange(sequence, playerAction, aiAction) {
   const directCommit = sequence.length <= 2 && ["Advance", "Half Step In"].includes(sequence[0]) && ["Lunge", "Step-Lunge", "Fleche"].includes(sequence.at(-1));
 
   result.what = `Your sequence: ${label}. Opponent: ${opponentSequenceLabel(aiAction, sequence)}. ${result.what}`;
+  result.why += ` The plan was evaluated from ${plan.distanceInfo.label}; opponent state was ${plan.opponent.toLowerCase()}.`;
 
   if (!hasFinish && aiAction === "Attack" && ["Retreat", "Half Step Out", "Hold Distance"].includes(lastAction)) {
     result.playerTouch = false;
@@ -912,6 +1237,52 @@ function resolveSequenceExchange(sequence, playerAction, aiAction) {
     result.why += " The sequence included footwork, preparation, and a finish instead of a single isolated action.";
   }
 
+  if (hasFinish) {
+    result.scores.tactical += Math.round(plan.quality / 3);
+    result.scores.timing += Math.max(-3, Math.min(4, Math.round(plan.quality / 4)));
+    if (plan.notes.length) result.why += ` ${plan.notes.join(" ")}.`;
+  }
+
+  if (plan.quality >= 8 && hasFinish && !result.opponentTouch) {
+    result.playerTouch = true;
+    result.title = result.title === "TACTICAL RESET" ? "TACTICAL PLAN SCORES" : result.title;
+    result.what = "Your setup created enough distance, timing, or opponent reaction for the finish to land cleanly.";
+    result.better = "Keep the same idea, but vary the preparation so the pattern stays hard to read.";
+    result.advice = "Strong epee actions usually come from preparation plus the right measure, not from the finish alone.";
+  }
+
+  if (plan.quality <= -5 && hasFinish) {
+    result.playerTouch = false;
+    if (!result.opponentTouch && ["Counterattack", "Attack"].includes(aiAction)) result.opponentTouch = true;
+    result.title = result.opponentTouch ? "PLAN PUNISHED" : "ATTACK MISSES";
+    result.what = "The finish did not match the distance or opponent state, so the opponent could avoid or punish it.";
+    result.why = `${plan.distanceInfo.note}. ${plan.notes.join(" ") || "The action committed before the setup created a clear cue."}`;
+    result.better = betterPlanFor(sequence, playerAction, aiAction, plan.distanceInfo.key);
+    result.advice = "Build the phrase until the opponent gives a real commitment, then choose the finish.";
+    result.scores.tactical -= 4;
+    result.scores.distance -= plan.distanceInfo.key >= 4 ? 4 : 1;
+    result.scores.timing -= 3;
+  }
+
+  if (plan.context.label === "ahead" && result.playerTouch && result.opponentTouch) {
+    result.scores.tactical -= 3;
+    result.why += " Because you were ahead, accepting a double touch was less valuable than a clean single-light action.";
+    result.better = "Protect the lead with distance, parry-riposte, or a cleaner counterattack timing.";
+  }
+
+  if (plan.context.label === "behind" && result.playerTouch && !result.opponentTouch && risk >= 5) {
+    result.scores.tactical += 2;
+    result.why += " Since you were behind, the calculated risk was more acceptable because it produced a single touch.";
+  }
+
+  if (plan.context.label === "final-touch tie" && risk >= 6) {
+    result.scores.tactical -= 4;
+    if (result.playerTouch && result.opponentTouch) {
+      result.why += " At final touch, reckless doubles are punished because they do not show clean control.";
+      result.better = "Use patient preparation, make the opponent miss, then finish with a cleaner action.";
+    }
+  }
+
   if (risk >= 8) {
     result.scores.tactical -= 4;
     result.scores.timing -= 5;
@@ -935,6 +1306,15 @@ function resolveSequenceExchange(sequence, playerAction, aiAction) {
   }
 
   return result;
+}
+
+function betterPlanFor(sequence, playerAction, aiAction, distanceKey) {
+  if (distanceKey >= 4 && ["Lunge", "Counterattack"].includes(playerAction)) return "Use Half Step In -> Feint -> Lunge, or Step-Lunge only after you make the distance real.";
+  if (playerAction === "Counterattack" && aiAction !== "Attack") return "Counterattack only after the opponent commits; otherwise hold distance or bait first.";
+  if (playerAction === "Parry-Riposte" && aiAction === "Feint") return "Wait for the real extension or use a smaller blade action before riposting.";
+  if (sequence.filter((action) => action === "Advance").length >= 2) return "Break the advance-attack rhythm with Change Rhythm, Feint, or Beat before finishing.";
+  if (playerAction === "Fleche" && distanceKey <= 1) return "At dangerous close distance, retreat, parry-riposte, or counterattack instead of launching a big fleche.";
+  return "Prepare with distance or blade work first, then finish when the opponent reacts.";
 }
 
 function resolveTacticalExchange(playerAction, aiAction) {
@@ -1134,19 +1514,30 @@ function lockMatchButtons(sequence) {
   });
 }
 
-function animateExchange(playerAction, aiAction, playerTouch, opponentTouch) {
+function animateExchange(playerAction, aiAction, playerTouch, opponentTouch, resultLabel = "", resultTitle = "") {
   els.youFencer.classList.toggle("attack-you", ["Lunge", "Fleche", "Counterattack", "Parry-Riposte"].includes(playerAction));
   els.themFencer.classList.toggle("attack-them", ["Attack", "Counterattack"].includes(aiAction));
   els.youFencer.classList.toggle("retreat-you", playerAction === "Retreat");
   els.themFencer.classList.toggle("retreat-them", aiAction === "Retreat");
   els.youFencer.classList.toggle("flash", playerTouch || opponentTouch);
   els.themFencer.classList.toggle("flash", playerTouch || opponentTouch);
-  els.touchFlash.classList.toggle("show", playerTouch || opponentTouch);
+  const banner = exchangeBannerText(playerTouch, opponentTouch, resultLabel, resultTitle);
+  els.touchFlash.textContent = banner.text;
+  els.touchFlash.className = `touch-flash show ${banner.tone}`;
   setTimeout(() => {
     els.youFencer.classList.remove("flash", "attack-you", "retreat-you");
     els.themFencer.classList.remove("flash", "attack-them", "retreat-them");
-    els.touchFlash.classList.remove("show");
+    els.touchFlash.className = "touch-flash";
   }, 650);
+}
+
+function exchangeBannerText(playerTouch, opponentTouch, resultLabel = "", resultTitle = "") {
+  const text = `${resultLabel} ${resultTitle}`.toUpperCase();
+  if (playerTouch && opponentTouch) return { text: "DOUBLE TOUCH", tone: "double" };
+  if (playerTouch || opponentTouch) return { text: "TOUCH", tone: playerTouch ? "player-touch" : "opponent-touch" };
+  if (text.includes("SHORT")) return { text: "FALLS SHORT", tone: "miss" };
+  if (text.includes("MISS")) return { text: "MISS", tone: "miss" };
+  return { text: "NO TOUCH", tone: "no-touch" };
 }
 
 function animateScore(playerTouch, opponentTouch) {
@@ -1161,6 +1552,10 @@ function animateScore(playerTouch, opponentTouch) {
 }
 
 function nextExchange() {
+  if (state.duel?.localMode) {
+    nextDuelExchange();
+    return;
+  }
   state.match.round += 1;
   newMatchSituation();
   els.matchFeedback.textContent = "Analyze the new situation and choose an action.";
@@ -1183,12 +1578,369 @@ function replayExchange() {
 }
 
 function resetMatch() {
-  state.match = { player: 0, opponent: 0, round: 1, tactical: 0, distanceScore: 0, timing: 0, distance: 3, locked: false, over: false, type: els.opponentType.value, mode: els.matchMode.value, aiDifficulty: selectedAiDifficulty(), learningMode: els.learningMode.value, tournamentStage: 1, situation: null, sequence: [], appliedSequenceLength: 0, setupDistanceStack: [], pendingAiAction: null, planHint: "", liveCue: "", previous: [], history: [], replaySnapshot: null, lastAiAction: null, lastAdjustment: "No adjustment yet." };
+  stopDuelTimer();
+  state.match = { player: 0, opponent: 0, round: 1, tactical: 0, distanceScore: 0, timing: 0, distance: 3, locked: false, over: false, type: els.opponentType.value, mode: els.matchMode.value, aiDifficulty: selectedAiDifficulty(), learningMode: els.learningMode.value, tournamentStage: 1, situation: null, sequence: [], appliedSequenceLength: 0, setupDistanceStack: [], pendingAiAction: null, planHint: "", liveCue: "", previous: [], history: [], replaySnapshot: null, lastAiAction: null, lastAdjustment: "No adjustment yet.", pathAiRecorded: false };
   document.querySelector(".opponent-analysis")?.removeAttribute("open");
   els.replayExchange.disabled = false;
   els.matchFeedback.textContent = "Choose an action to fence the first exchange.";
   newMatchSituation();
   setMatchView("fight");
+}
+
+function createDuelState() {
+  return {
+    localMode: true,
+    active: false,
+    over: false,
+    phase: "p1Planning",
+    planningPlayer: "p1",
+    timerEnabled: els.duelTimerMode.value !== "off",
+    timeLeft: Number(els.duelTimerMode.value) || 0,
+    p1: 0,
+    p2: 0,
+    exchange: 1,
+    tempo: 0,
+    distance: 3,
+    plans: { p1: [], p2: [] },
+    revealed: false,
+    log: ["Player 1: build your secret plan."],
+    lastResult: null
+  };
+}
+
+function stopDuelTimer() {
+  if (!duelTimer) return;
+  clearInterval(duelTimer);
+  duelTimer = null;
+}
+
+function startDuelTimer() {
+  stopDuelTimer();
+  duelTimer = setInterval(tickDuelPlanningTimer, 1000);
+}
+
+function startDuelMatch() {
+  stopDuelTimer();
+  state.duel = createDuelState();
+  els.replayExchange.disabled = true;
+  setMatchView("duel");
+  renderDuel();
+  state.duel.active = true;
+  startDuelPlanningTimer();
+}
+
+function nextDuelExchange() {
+  if (!state.duel || state.duel.over) return;
+  const score = { p1: state.duel.p1, p2: state.duel.p2 };
+  state.duel = { ...createDuelState(), ...score, exchange: state.duel.exchange + 1, log: ["Player 1: build your secret plan."] };
+  setMatchView("duel");
+  renderDuel();
+  state.duel.active = true;
+  startDuelPlanningTimer();
+}
+
+function resetDuel() {
+  startDuelMatch();
+}
+
+function duelActionSpeed(action) {
+  if (action === "Fleche") return 3;
+  if (["Lunge", "Step-Lunge", "Parry-Riposte"].includes(action)) return 2;
+  return 1;
+}
+
+function isDuelFinish(action) {
+  return ["Lunge", "Step-Lunge", "Fleche", "Counterattack", "Parry-Riposte"].includes(action);
+}
+
+function isDuelAttack(action) {
+  return ["Lunge", "Step-Lunge", "Fleche"].includes(action);
+}
+
+function currentDuelPlayer() {
+  return state.duel?.planningPlayer || "p1";
+}
+
+function queueDuelAction(action) {
+  const duel = state.duel;
+  if (!duel || !duel.active || duel.over || !["p1Planning", "p2Planning"].includes(duel.phase)) return;
+  const player = currentDuelPlayer();
+  const plan = duel.plans[player];
+  if (plan.length >= 3 || plan.some(isDuelFinish)) return;
+  plan.push(action);
+  duel.log.unshift(`${player === "p1" ? "Player 1" : "Player 2"} adds ${action}.`);
+  renderDuel();
+}
+
+function clearDuelPlan() {
+  const duel = state.duel;
+  if (!duel || !["p1Planning", "p2Planning"].includes(duel.phase)) return;
+  duel.plans[currentDuelPlayer()] = [];
+  duel.log.unshift("Current plan cleared.");
+  renderDuel();
+}
+
+function lockDuelPlan() {
+  const duel = state.duel;
+  if (!duel || duel.over) return;
+  if (duel.phase === "reveal") {
+    nextDuelExchange();
+    return;
+  }
+  if (!["p1Planning", "p2Planning"].includes(duel.phase)) return;
+  const player = currentDuelPlayer();
+  if (!duel.plans[player].length) duel.plans[player].push("Hold Distance");
+  stopDuelTimer();
+  if (player === "p1") {
+    duel.phase = "pass";
+    duel.planningPlayer = "p2";
+    duel.timeLeft = Number(els.duelTimerMode.value) || 0;
+    duel.log = ["Player 1 plan locked. Pass the device to Player 2."];
+  } else {
+    revealDuelPlans();
+    return;
+  }
+  renderDuel();
+}
+
+function startPlayerTwoPlanning() {
+  const duel = state.duel;
+  if (!duel || duel.phase !== "pass") return;
+  duel.phase = "p2Planning";
+  duel.planningPlayer = "p2";
+  duel.log = ["Player 2: build your secret plan."];
+  renderDuel();
+  startDuelPlanningTimer();
+}
+
+function startDuelPlanningTimer() {
+  const duel = state.duel;
+  if (!duel?.timerEnabled) return;
+  duel.timeLeft = Number(els.duelTimerMode.value) || 15;
+  startDuelTimer();
+}
+
+function tickDuelPlanningTimer() {
+  const duel = state.duel;
+  if (!duel || duel.over || !["p1Planning", "p2Planning"].includes(duel.phase)) return stopDuelTimer();
+  duel.timeLeft -= 1;
+  if (duel.timeLeft <= 0) {
+    duel.log.unshift("Time expired. Current plan locked automatically.");
+    lockDuelPlan();
+    return;
+  }
+  renderDuel();
+}
+
+function revealDuelPlans() {
+  const duel = state.duel;
+  stopDuelTimer();
+  if (!duel.plans.p2.length) duel.plans.p2.push("Hold Distance");
+  const simulation = simulateDuelExchange(duel.plans.p1, duel.plans.p2);
+  duel.phase = "reveal";
+  duel.revealed = true;
+  duel.tempo = simulation.tempos;
+  duel.distance = simulation.distance;
+  duel.log = simulation.log;
+  finishDuelExchange(simulation.result);
+}
+
+function simulateDuelExchange(p1Plan, p2Plan) {
+  const sim = {
+    distance: 3,
+    prep: { p1: 0, p2: 0 },
+    current: { p1: null, p2: null },
+    index: { p1: 0, p2: 0 },
+    plans: { p1: p1Plan, p2: p2Plan },
+    missWindow: null,
+    log: []
+  };
+  let result = null;
+  let tempo = 0;
+  while (!result && tempo < 9) {
+    tempo += 1;
+    ["p1", "p2"].forEach((player) => startSimAction(sim, player, player === "p1" ? p1Plan : p2Plan));
+    const completed = [];
+    ["p1", "p2"].forEach((player) => {
+      if (!sim.current[player]) return;
+      sim.current[player].remaining -= 1;
+      if (sim.current[player].remaining <= 0) {
+        completed.push({ player, action: sim.current[player].action });
+        sim.current[player] = null;
+      }
+    });
+    completed.forEach(({ player, action }) => applySimDuelAction(sim, player, action));
+    if (completed.length) sim.log.push(`Tempo ${tempo}: ${completed.map((item) => `${item.player === "p1" ? "P1" : "P2"} ${item.action}`).join(". ")}.`);
+    result = resolveDuelTempo(sim, completed);
+    if (!result && !sim.current.p1 && !sim.current.p2 && sim.index.p1 >= p1Plan.length && sim.index.p2 >= p2Plan.length) break;
+  }
+  if (!result) result = buildDuelResult("none", "No touch", "Both plans finished without a clean scoring action.", "Neither fencer created enough commitment or distance advantage.", "Tactical IQ");
+  return { result, log: sim.log, distance: sim.distance, tempos: tempo };
+}
+
+function startSimAction(sim, player, plan) {
+  if (sim.current[player] || sim.index[player] >= plan.length) return;
+  const action = plan[sim.index[player]];
+  sim.index[player] += 1;
+  sim.current[player] = { action, remaining: duelActionSpeed(action), committed: isDuelFinish(action) };
+}
+
+function applySimDuelAction(sim, player, action) {
+  if (action === "Advance" || action === "Half Step In") sim.distance = Math.max(1, sim.distance - (action === "Advance" ? 1 : 0.5));
+  if (action === "Retreat" || action === "Half Step Out") sim.distance = Math.min(5, sim.distance + (action === "Retreat" ? 1 : 0.5));
+  if (action === "Hold Distance") sim.distance = Math.min(5, Math.max(2, sim.distance));
+  if (["Feint", "Bait", "Beat", "Change Rhythm", "Half Step In"].includes(action)) sim.prep[player] += 1;
+  if (["Lunge", "Step-Lunge", "Fleche"].includes(action)) sim.distance = Math.max(1, sim.distance - (action === "Fleche" ? 2 : action === "Step-Lunge" ? 1.5 : 1));
+}
+
+function resolveDuelTempo(sim, completed) {
+  const p1Action = completed.find((item) => item.player === "p1")?.action || null;
+  const p2Action = completed.find((item) => item.player === "p2")?.action || null;
+  const p1CurrentAttack = sim.current.p1 && isDuelAttack(sim.current.p1.action);
+  const p2CurrentAttack = sim.current.p2 && isDuelAttack(sim.current.p2.action);
+  if (["Retreat", "Half Step Out", "Hold Distance"].includes(p1Action) && p2CurrentAttack) {
+    sim.current.p2 = null;
+    sim.missWindow = { scorer: "p1", reason: "Player 1 made Player 2's attack fall short." };
+    sim.log.push("P2 attack falls short as P1 controls distance.");
+    return null;
+  }
+  if (["Retreat", "Half Step Out", "Hold Distance"].includes(p2Action) && p1CurrentAttack) {
+    sim.current.p1 = null;
+    sim.missWindow = { scorer: "p2", reason: "Player 2 made Player 1's attack fall short." };
+    sim.log.push("P1 attack falls short as P2 controls distance.");
+    return null;
+  }
+  const p1Finish = p1Action && isDuelFinish(p1Action);
+  const p2Finish = p2Action && isDuelFinish(p2Action);
+  if (!p1Finish && !p2Finish) return null;
+  if (p1Action === "Counterattack" && sim.missWindow?.scorer === "p1") return buildDuelResult("p1", "Player 1 touch", "Player 1 invited the attack, opened distance, then counterattacked after Player 2 missed.", "P2 overcommitted into the retreat.", "Distance Control");
+  if (p2Action === "Counterattack" && sim.missWindow?.scorer === "p2") return buildDuelResult("p2", "Player 2 touch", "Player 2 opened distance and counterattacked after Player 1 missed.", "P1 overcommitted into the retreat.", "Distance Control");
+  if (p1Action === "Parry-Riposte" && p2CurrentAttack && sim.prep.p2 > 0) return buildDuelResult("p2", "Player 2 touch", "Player 2's feint drew the parry before the real attack arrived.", "P1 parried too early.", "Blade Work");
+  if (p2Action === "Parry-Riposte" && p1CurrentAttack && sim.prep.p1 > 0) return buildDuelResult("p1", "Player 1 touch", "Player 1's feint drew the parry before the real attack arrived.", "P2 parried too early.", "Blade Work");
+  if (p1Action === "Counterattack" && sim.current.p2?.action === "Fleche" && sim.distance <= 3) return buildDuelResult("double", "Double touch", "Player 2's fleche was committed and Player 1 counterattacked into it.", "The counterattack landed during the fleche tempo.", "Timing");
+  if (p2Action === "Counterattack" && sim.current.p1?.action === "Fleche" && sim.distance <= 3) return buildDuelResult("double", "Double touch", "Player 1's fleche was committed and Player 2 counterattacked into it.", "The counterattack landed during the fleche tempo.", "Timing");
+  const p1Quality = duelFinishQuality(sim, "p1", p1Action, p2Action, p2CurrentAttack);
+  const p2Quality = duelFinishQuality(sim, "p2", p2Action, p1Action, p1CurrentAttack);
+  if (p1Finish && p2Finish) {
+    if (sim.distance <= 2 || Math.abs(p1Quality - p2Quality) <= 2) return buildDuelResult("double", "Double touch", "Both fencers committed in close timing.", "Both attacks arrived before either point was controlled.", "Timing");
+    return p1Quality > p2Quality
+      ? buildDuelResult("p1", "Player 1 touch", "Player 1's preparation and timing beat Player 2's action.", `P2 ${p2Action.toLowerCase()} was slower or less prepared.`, "Tactical IQ")
+      : buildDuelResult("p2", "Player 2 touch", "Player 2's preparation and timing beat Player 1's action.", `P1 ${p1Action.toLowerCase()} was slower or less prepared.`, "Tactical IQ");
+  }
+  if (p1Finish) return resolveSingleDuelFinish(sim, "p1", p1Action, p1Quality, p2CurrentAttack);
+  return resolveSingleDuelFinish(sim, "p2", p2Action, p2Quality, p1CurrentAttack);
+}
+
+function duelFinishQuality(sim, player, action, opposingAction, opponentAttacking) {
+  if (!action) return -6;
+  const d = sim.distance;
+  let quality = sim.prep[player] * 2 + actionCommitment(action);
+  if (action === "Counterattack") quality += opponentAttacking || isDuelAttack(opposingAction) ? 6 : -5;
+  if (action === "Parry-Riposte") quality += opponentAttacking || isDuelAttack(opposingAction) ? 5 : -4;
+  if (action === "Lunge") quality += d === 3 ? 4 : d >= 4 ? -4 : d <= 1 ? -2 : 2;
+  if (action === "Step-Lunge") quality += [3, 4].includes(Math.round(d)) ? 3 : -2;
+  if (action === "Fleche") quality += d >= 3 ? 2 : -4;
+  return quality;
+}
+
+function resolveSingleDuelFinish(sim, player, action, quality, opponentAttacking) {
+  const label = player === "p1" ? "Player 1" : "Player 2";
+  const opponent = player === "p1" ? "Player 2" : "Player 1";
+  if (sim.distance >= 5 && ["Lunge", "Counterattack"].includes(action)) return buildDuelResult("none", "Attack fell short", `${label}'s ${action.toLowerCase()} started from too far away.`, "The distance was not prepared before the finish.", "Distance Control");
+  if (action === "Counterattack" && !opponentAttacking) return buildDuelResult(player === "p1" ? "p2" : "p1", `${opponent} touch`, `${label} counterattacked without a real attack to counter.`, "Counterattack is a reaction, not a first intention finish.", "Timing");
+  if (action === "Parry-Riposte" && !opponentAttacking) return buildDuelResult(player === "p1" ? "p2" : "p1", `${opponent} touch`, `${label} parried too early and opened the line.`, "Parry-riposte needs the opponent to actually commit.", "Blade Work");
+  if (quality >= 5) return buildDuelResult(player, `${label} touch`, `${label} created enough preparation and measure for the ${action.toLowerCase()}.`, "The finish landed after the setup improved timing.", action === "Parry-Riposte" ? "Blade Work" : "Tactical IQ");
+  return buildDuelResult("none", "No touch", `${label}'s ${action.toLowerCase()} did not produce a clean scoring action.`, "The setup was not strong enough for the distance.", "Distance Control");
+}
+
+function buildDuelResult(winner, title, why, keyMoment, focus) {
+  return { winner, title, why, keyMoment, focus };
+}
+
+function finishDuelExchange(result) {
+  const duel = state.duel;
+  stopDuelTimer();
+  duel.active = false;
+  duel.lastResult = result;
+  if (result.winner === "p1" || result.winner === "double") duel.p1 += 1;
+  if (result.winner === "p2" || result.winner === "double") duel.p2 += 1;
+  animateDuelTouch(result.winner);
+  if (duel.p1 >= 5 || duel.p2 >= 5) {
+    duel.over = true;
+  }
+  trackLocalDuelProgress(duel.over);
+  renderDuel();
+}
+
+function renderDuel() {
+  const duel = state.duel;
+  if (!duel) return;
+  ensureFencerSprites();
+  const key = Math.max(1, Math.min(5, Math.round(duel.distance)));
+  els.duelP1Score.textContent = duel.p1;
+  els.duelP2Score.textContent = duel.p2;
+  els.duelExchange.textContent = duel.exchange;
+  els.duelTempo.textContent = duel.timerEnabled && ["p1Planning", "p2Planning"].includes(duel.phase) ? `${duel.timeLeft}s` : duel.phase === "reveal" ? duel.tempo : "-";
+  els.duelDistance.textContent = `Distance: ${Number(duel.distance.toFixed(1))}`;
+  els.duelDistanceName.textContent = distanceNames[key];
+  els.duelPhaseLabel.textContent = duel.phase === "pass" ? "Pass Device" : duel.phase === "reveal" ? "Reveal" : "Planning Phase";
+  els.duelStatus.textContent = duel.over
+    ? `${duel.p1 > duel.p2 ? "Player 1" : "Player 2"} wins ${duel.p1}-${duel.p2}`
+    : duel.phase === "p1Planning" ? "Player 1: Build your plan"
+      : duel.phase === "pass" ? "Player 1 plan locked. Pass the device to Player 2."
+        : duel.phase === "p2Planning" ? "Player 2: Build your plan"
+          : `${duel.lastResult.title}: ${duel.lastResult.why}`;
+  els.duelP1Action.textContent = duel.phase === "p1Planning" ? "Planning" : duel.phase === "reveal" || duel.over ? "Revealed" : "Locked";
+  els.duelP2Action.textContent = duel.phase === "p2Planning" ? "Planning" : duel.phase === "reveal" || duel.over ? "Revealed" : "Hidden";
+  els.duelP1Plan.innerHTML = visibleDuelPlan("p1");
+  els.duelP2Plan.innerHTML = visibleDuelPlan("p2");
+  els.duelEventLog.innerHTML = duel.log.slice(0, 8).map((item) => `<li>${item}</li>`).join("");
+  els.duelP1Fencer.style.left = `${8 + (5 - duel.distance) * 5.5}%`;
+  els.duelP2Fencer.style.right = `${8 + (5 - duel.distance) * 5.5}%`;
+  document.querySelectorAll("[data-duel-plan-action]").forEach((btn) => {
+    btn.disabled = !["p1Planning", "p2Planning"].includes(duel.phase) || duel.plans[currentDuelPlayer()].length >= 3 || duel.plans[currentDuelPlayer()].some(isDuelFinish);
+  });
+  document.querySelector(".duel-actions")?.classList.toggle("hidden", !["p1Planning", "p2Planning"].includes(duel.phase));
+  els.lockDuelPlan.classList.toggle("hidden", duel.phase === "pass" || duel.over);
+  els.lockDuelPlan.textContent = duel.phase === "p2Planning" ? "Lock Plan and Reveal" : duel.phase === "reveal" ? "Next Exchange" : "Lock Plan";
+  els.duelPlayerReady.classList.toggle("hidden", duel.phase !== "pass");
+  els.clearDuelPlan.classList.toggle("hidden", !["p1Planning", "p2Planning"].includes(duel.phase));
+}
+
+function visibleDuelPlan(player) {
+  const duel = state.duel;
+  const canShow = duel.phase === "reveal" || duel.over || duel.planningPlayer === player && ["p1Planning", "p2Planning"].includes(duel.phase);
+  if (!canShow) return `<span class="empty-sequence">Plan hidden</span>`;
+  const plan = duel.plans[player];
+  return plan.length ? plan.map((action) => `<span>${action}</span>`).join("<b>→</b>") : `<span class="empty-sequence">Choose up to 3 actions</span>`;
+}
+
+function animateDuelAction(player, action) {
+  const fencer = player === "p1" ? els.duelP1Fencer : els.duelP2Fencer;
+  const isRetreat = ["Retreat", "Half Step Out"].includes(action);
+  const isAttack = isDuelFinish(action);
+  fencer.classList.toggle(player === "p1" ? "attack-you" : "attack-them", isAttack);
+  fencer.classList.toggle(player === "p1" ? "retreat-you" : "retreat-them", isRetreat);
+  setTimeout(() => {
+    fencer.classList.remove("attack-you", "attack-them", "retreat-you", "retreat-them");
+  }, 520);
+}
+
+function animateDuelTouch(winner) {
+  [els.duelP1Score, els.duelP2Score].forEach((target) => target.classList.remove("score-bump"));
+  if (winner === "p1" || winner === "double") els.duelP1Score.classList.add("score-bump");
+  if (winner === "p2" || winner === "double") els.duelP2Score.classList.add("score-bump");
+  els.duelTouchFlash.classList.toggle("show", winner !== "none");
+  setTimeout(() => els.duelTouchFlash.classList.remove("show"), 650);
+}
+
+function updateSimulatorSetupMode() {
+  const duelMode = els.simulatorMode.value === "duel";
+  [els.matchMode, els.aiDifficulty, els.learningMode, els.opponentType].forEach((select) => {
+    select.closest("label").classList.toggle("hidden", duelMode);
+  });
+  els.duelTimerMode.closest("label").classList.toggle("hidden", !duelMode);
+  els.startMatch.textContent = duelMode ? "Start Local Duel" : "Start Match";
 }
 
 function advanceTournament() {
@@ -1243,6 +1995,7 @@ function finishMatch() {
   state.progress.ratingTotal += rating;
   state.progress.ratingCount += 1;
   state.progress.tacticalRating = rating;
+  trackAiMatchProgress();
   grantXp(25 + (won ? 50 : 0), {
     matchExperience: 10,
     tacticalIq: won ? 25 : 12,
@@ -1271,6 +2024,10 @@ function finishMatch() {
 }
 
 function handleDrillKey(event) {
+  if (state.duel?.active && !els.duelGame.classList.contains("hidden")) {
+    handleDuelKey(event);
+    return;
+  }
   if (els.matchGame.classList.contains("hidden")) return;
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) return;
   let action = event.code === "Space" && event.shiftKey ? "Step-Lunge" : keyToAction[event.code];
@@ -1278,6 +2035,25 @@ function handleDrillKey(event) {
   if (!action) return;
   event.preventDefault();
   queueAction(action);
+}
+
+function handleDuelKey(event) {
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) return;
+  let action = null;
+  if (event.code === "KeyA") action = "Retreat";
+  if (event.code === "KeyD") action = "Advance";
+  if (event.code === "KeyQ") action = "Half Step Out";
+  if (event.code === "KeyE") action = "Half Step In";
+  if (event.code === "KeyH") action = "Hold Distance";
+  if (event.code === "KeyC") action = "Change Rhythm";
+  if (event.code === "KeyF") action = event.shiftKey ? "Fleche" : "Feint";
+  if (event.code === "KeyB") action = event.shiftKey ? "Beat" : "Bait";
+  if (event.code === "Space") action = event.shiftKey ? "Step-Lunge" : "Lunge";
+  if (event.code === "KeyK") action = "Counterattack";
+  if (event.code === "KeyR") action = "Parry-Riposte";
+  if (!action) return;
+  event.preventDefault();
+  queueDuelAction(action);
 }
 
 function setControlMode(mode) {
@@ -1307,15 +2083,34 @@ function bindEvents() {
       experience: els.profileExperienceInput.value,
       years: els.profileYearsInput.value,
       goal: els.profileGoalInput.value,
-      style: els.profileStyleInput.value
+      style: els.profileStyleInput.value,
+      avatarId: els.profileAvatarInput.value || "classic-epee"
     });
     els.profileSetup.classList.remove("show");
     showView("profile");
   });
-  els.avatarSelect.addEventListener("change", () => {
-    if (!state.progress.profile) return;
-    state.progress.profile.avatar = els.avatarSelect.value;
-    saveProgress();
+  els.changeAvatarBtn.addEventListener("click", () => {
+    pendingAvatarId = profileAvatarId();
+    renderProfile();
+    els.avatarModal.classList.remove("hidden");
+  });
+  els.avatarChoiceGrid.addEventListener("click", (event) => {
+    const choice = event.target.closest("[data-avatar-id]");
+    if (!choice || choice.disabled) return;
+    pendingAvatarId = choice.dataset.avatarId;
+    els.avatarChoiceGrid.querySelectorAll(".avatar-choice").forEach((btn) => {
+      btn.classList.toggle("selected", btn.dataset.avatarId === pendingAvatarId);
+    });
+  });
+  [els.avatarCancelBtn, els.avatarCancelFooterBtn].forEach((button) => button.addEventListener("click", () => {
+    pendingAvatarId = null;
+    els.avatarModal.classList.add("hidden");
+    renderProfile();
+  }));
+  els.avatarSaveBtn.addEventListener("click", () => {
+    if (pendingAvatarId) setProfileAvatar(pendingAvatarId);
+    pendingAvatarId = null;
+    els.avatarModal.classList.add("hidden");
   });
   els.flashCard.addEventListener("click", () => { state.flashFlipped = !state.flashFlipped; renderFlashcard(); });
   $("prevCard").addEventListener("click", () => moveCard(-1));
@@ -1326,6 +2121,7 @@ function bindEvents() {
     if (!state.progress.mastered.includes(id)) {
       state.progress.mastered.push(id);
       grantXp(10, { bladeWork: 10, mentalGame: 3 }, "Flashcards");
+      trackFlashcardProgress();
     }
     renderFlashcard();
   });
@@ -1333,8 +2129,38 @@ function bindEvents() {
   $("restartQuiz").addEventListener("click", resetQuiz);
   els.nextQuestion.addEventListener("click", () => { state.quizIndex += 1; renderQuiz(); });
   els.scenarioDifficulty.addEventListener("change", () => { state.scenarioDifficulty = els.scenarioDifficulty.value; state.scenarioIndex = 0; renderScenario(); });
+  els.scenarioPack.addEventListener("change", () => { state.scenarioPack = els.scenarioPack.value; state.scenarioIndex = 0; renderScenario(); });
   $("replayScenario").addEventListener("click", renderScenario);
   els.nextScenario.addEventListener("click", () => { state.scenarioIndex += 1; renderScenario(); });
+  els.activePathSelect.addEventListener("change", () => {
+    setActivePath(state.progress, els.activePathSelect.value);
+    saveProgress();
+  });
+  document.addEventListener("click", (event) => {
+    const pathSelect = event.target.closest("[data-path-select]");
+    if (pathSelect) {
+      setActivePath(state.progress, pathSelect.dataset.pathSelect);
+      saveProgress();
+      return;
+    }
+    const trainingStepAction = event.target.closest("[data-training-step-action]");
+    if (trainingStepAction) {
+      event.preventDefault();
+      navigateTrainingStep(trainingStepAction.dataset.trainingStepAction, trainingStepAction.dataset.view || "hub");
+      return;
+    }
+    const manualComplete = event.target.closest("[data-path-step-complete]");
+    if (manualComplete) {
+      const [pathId, stepId] = manualComplete.dataset.pathStepComplete.split(":");
+      completeTrainingPathStep(pathId, stepId);
+      return;
+    }
+    const pathView = event.target.closest(".path-step [data-view]");
+    if (pathView) {
+      event.preventDefault();
+      showView(pathView.dataset.view);
+    }
+  });
   ["Movement", "Preparation", "Finish"].forEach((group) => {
     const groupEl = document.createElement("section");
     groupEl.className = "action-group";
@@ -1347,7 +2173,8 @@ function bindEvents() {
       btn.className = "action-btn";
       btn.type = "button";
       btn.dataset.action = action.name;
-      btn.innerHTML = `<span>${action.name}</span><small>${action.key}</small>`;
+      btn.dataset.group = action.group;
+      btn.innerHTML = `<i>${actionIcon(action.name, action.group)}</i><span>${action.name}</span><small>${action.key}</small>`;
       btn.addEventListener("click", () => scoreMatchAction(action.name));
       grid.appendChild(btn);
     });
@@ -1366,10 +2193,21 @@ function bindEvents() {
   els.undoSequence.addEventListener("click", undoSequence);
   els.clearSequence.addEventListener("click", clearSequence);
   document.addEventListener("keydown", handleDrillKey);
-  els.startMatch.addEventListener("click", resetMatch);
+  els.simulatorMode.addEventListener("change", updateSimulatorSetupMode);
+  document.querySelectorAll("[data-duel-plan-action]").forEach((btn) => {
+    btn.addEventListener("click", () => queueDuelAction(btn.dataset.duelPlanAction));
+  });
+  els.lockDuelPlan.addEventListener("click", lockDuelPlan);
+  els.duelPlayerReady.addEventListener("click", startPlayerTwoPlanning);
+  els.clearDuelPlan.addEventListener("click", clearDuelPlan);
+  els.startMatch.addEventListener("click", () => {
+    if (els.simulatorMode.value === "duel") startDuelMatch();
+    else resetMatch();
+  });
   els.nextExchange.addEventListener("click", nextExchange);
   $("replayExchange").addEventListener("click", replayExchange);
   $("resetMatch").addEventListener("click", returnToMatchSetup);
+  els.resetDuel.addEventListener("click", resetDuel);
   els.analysisResetMatch.addEventListener("click", returnToMatchSetup);
   $("resetAll").addEventListener("click", () => {
     state.progress = normalizeProgress({ ...defaultProgress, mastered: [] });
@@ -1379,11 +2217,27 @@ function bindEvents() {
   });
 }
 
+function actionIcon(action, group) {
+  if (group === "Movement") return action.includes("Retreat") || action.includes("Out") ? "↔" : "→";
+  if (group === "Preparation") {
+    if (action === "Feint") return "◎";
+    if (action === "Bait") return "◇";
+    if (action === "Beat") return "▰";
+    return "◷";
+  }
+  if (action === "Parry-Riposte") return "▰";
+  if (action === "Counterattack") return "↩";
+  if (action === "Fleche") return "⚡";
+  return "◆";
+}
+
 renderGuide();
 bindEvents();
 renderProgress();
+renderTrainingPath();
 renderFlashcard();
 renderQuiz();
 renderScenario();
+updateSimulatorSetupMode();
 showMatchSetup();
 showProfileSetupIfNeeded();

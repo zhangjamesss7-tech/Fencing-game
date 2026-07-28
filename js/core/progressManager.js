@@ -1,4 +1,5 @@
 import { defaultSkills } from "../data/skillData.js";
+import { defaultTrainingPathState, normalizeTrainingPathState } from "./trainingPathManager.js";
 
 export const storeKey = "fencingIqEpeeAcademy";
 
@@ -20,24 +21,37 @@ export const defaultProgress = {
   completedTraining: 0,
   skills: { ...defaultSkills },
   unlocked: [],
-  trainingHistory: {}
+  trainingHistory: {},
+  trainingPath: defaultTrainingPathState()
 };
 
 export function normalizeProgress(progress = {}) {
-  return {
+  const profile = progress.profile ? {
+    ...progress.profile,
+    avatar: progress.profile.avatar || "Beginner Fencer",
+    avatarId: progress.profile.avatarId || legacyAvatarId(progress.profile.avatar)
+  } : null;
+  const normalized = {
     ...defaultProgress,
     ...progress,
     mastered: Array.isArray(progress.mastered) ? progress.mastered : [],
     skills: { ...defaultSkills, ...(progress.skills || {}) },
     unlocked: Array.isArray(progress.unlocked) ? progress.unlocked : [],
     trainingHistory: { ...(progress.trainingHistory || {}) },
-    profile: progress.profile || null
+    trainingPath: normalizeTrainingPathState(progress.trainingPath, profile),
+    profile
   };
+  normalized.trainingPath.stats.flashcardsMastered = Math.max(
+    normalized.trainingPath.stats.flashcardsMastered || 0,
+    normalized.mastered.length
+  );
+  return normalized;
 }
 
 export function loadProgress() {
   try {
-    return normalizeProgress({ ...defaultProgress, ...JSON.parse(localStorage.getItem(storeKey)) });
+    const saved = JSON.parse(localStorage.getItem(storeKey)) || {};
+    return normalizeProgress({ ...defaultProgress, ...saved, trainingPath: saved.trainingPath });
   } catch {
     return normalizeProgress(defaultProgress);
   }
@@ -65,6 +79,18 @@ export function createProfileData(data) {
     years: data.years,
     goal: data.goal,
     style: data.style,
-    avatar: "Beginner Fencer"
+    avatar: "Beginner Fencer",
+    avatarId: data.avatarId || "classic-epee"
   };
+}
+
+function legacyAvatarId(avatar = "Beginner Fencer") {
+  const map = {
+    "Beginner Fencer": "classic-epee",
+    "Tactical Fencer": "tactical-fencer",
+    "Aggressive Fencer": "aggressive-fencer",
+    "Defensive Fencer": "defensive-fencer",
+    "Champion Fencer": "competition-fencer"
+  };
+  return map[avatar] || "classic-epee";
 }

@@ -102,3 +102,54 @@ export const avatarIcons = {
   "Champion Fencer": "🏆"
 };
 
+export const avatarOptions = [
+  {
+    id: "classic-epee",
+    name: "Classic Epee Fencer",
+    description: "Default academy portrait.",
+    className: "avatar-classic",
+    unlock: { type: "always", label: "Available now" }
+  },
+  {
+    id: "mask-emblem",
+    name: "Mask Emblem",
+    description: "Clean fencing mask badge.",
+    className: "avatar-mask",
+    unlock: { type: "always", label: "Available now" }
+  },
+  {
+    id: "defensive-fencer",
+    name: "Defensive Fencer",
+    description: "Calm guard and steel accent.",
+    className: "avatar-defensive",
+    unlock: { type: "level", level: 3, label: "Unlocks at Level 3" }
+  },
+  {
+    id: "tactical-fencer",
+    name: "Tactical Fencer",
+    description: "Gold tactical-read frame.",
+    className: "avatar-tactical",
+    unlock: { type: "level", level: 5, label: "Unlocks at Level 5" }
+  },
+  {
+    id: "aggressive-fencer",
+    name: "Aggressive Fencer",
+    description: "Forward pressure profile.",
+    className: "avatar-aggressive",
+    unlock: { type: "level", level: 5, label: "Unlocks at Level 5" }
+  },
+  {
+    id: "competition-fencer",
+    name: "Competition Fencer",
+    description: "Tournament-ready portrait.",
+    className: "avatar-competition",
+    unlock: { type: "level", level: 10, label: "Unlocks at Level 10" }
+  },
+  {
+    id: "academy-fencer",
+    name: "Academy Fencer",
+    description: "Beginner path completion badge.",
+    className: "avatar-academy",
+    unlock: { type: "path", pathId: "beginner", label: "Complete Beginner Path" }
+  }
+];

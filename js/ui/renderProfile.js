@@ -6,13 +6,12 @@ export function skillTier(levelValue) {
 }
 
 export function renderProgress(ctx) {
-  const { els, state, avatarIcons, profileAvatarName, xpInLevel, level, accuracy, renderProfile, renderSkillTree } = ctx;
+  const { els, state, avatarOptions, profileAvatarId, avatarById, xpInLevel, level, accuracy, renderProfile, renderSkillTree } = ctx;
   const xpLevel = xpInLevel();
   const profile = state.progress.profile;
-  const avatarName = profileAvatarName();
-  const avatarIcon = avatarIcons[avatarName] || avatarIcons["Beginner Fencer"];
+  const avatar = avatarById(profileAvatarId());
   els.welcomeLabel.textContent = profile ? `Welcome Back, ${profile.name}` : "Welcome to Fencing IQ";
-  els.hubAvatar.textContent = avatarIcon;
+  renderAvatarFrame(els.hubAvatar, avatar, "mini-avatar");
   els.hubProfileName.textContent = profile?.name || "Create Profile";
   els.hubProfileStyle.textContent = profile ? `${profile.weapon} · ${profile.style}` : "Epee Fencer";
   els.hubLevel.textContent = `Fencer Level ${level()}`;
@@ -32,13 +31,12 @@ export function renderProgress(ctx) {
 }
 
 export function renderProfile(ctx) {
-  const { els, state, avatarIcons, profileAvatarName, level, xpInLevel, winRate, averageRating, skillDisplayPercent, skillLevel } = ctx;
+  const { els, state, avatarOptions, profileAvatarId, avatarById, isAvatarUnlocked, level, xpInLevel, winRate, averageRating, skillDisplayPercent, skillLevel } = ctx;
   const profile = state.progress.profile;
-  const avatarName = profileAvatarName();
-  const avatarIcon = avatarIcons[avatarName] || avatarIcons["Beginner Fencer"];
+  const avatar = avatarById(profileAvatarId());
   if (!profile) {
     els.profileName.textContent = "No profile yet";
-    els.profileAvatar.textContent = avatarIcons["Beginner Fencer"];
+    renderAvatarFrame(els.profileAvatar, avatar, "profile-avatar-frame");
     els.profileSummary.textContent = "Create a profile to start tracking progress.";
     els.profileWeapon.textContent = "Epee";
     els.profileExperience.textContent = "Beginner";
@@ -55,9 +53,10 @@ export function renderProfile(ctx) {
     els.statTouchesReceived.textContent = "0";
     els.statAvgRating.textContent = "0%";
     els.profileSkills.innerHTML = "";
+    renderAvatarChoices(ctx);
     return;
   }
-  els.profileAvatar.textContent = avatarIcon;
+  renderAvatarFrame(els.profileAvatar, avatar, "profile-avatar-frame");
   els.profileName.textContent = profile.name;
   els.profileSummary.textContent = `${profile.weapon} · ${profile.experience} · ${profile.style}`;
   els.profileWeapon.textContent = profile.weapon;
@@ -67,7 +66,7 @@ export function renderProfile(ctx) {
   els.profileLevel.textContent = level();
   els.profileXp.textContent = `${xpInLevel()} / 100`;
   els.profileXpFill.style.width = `${xpInLevel()}%`;
-  els.avatarSelect.value = profile.avatar;
+  els.avatarCurrentLabel.textContent = avatar.name;
   els.statMatches.textContent = state.progress.matches;
   els.statWins.textContent = state.progress.wins;
   els.statLosses.textContent = state.progress.losses;
@@ -92,6 +91,33 @@ export function renderProfile(ctx) {
       </div>
     `;
   }).join("");
+  renderAvatarChoices(ctx);
+}
+
+export function renderAvatarChoices(ctx) {
+  const { els, avatarOptions, profileAvatarId, pendingAvatarId, isAvatarUnlocked } = ctx;
+  if (!els.avatarChoiceGrid) return;
+  const selectedId = pendingAvatarId || profileAvatarId();
+  els.avatarChoiceGrid.innerHTML = avatarOptions.map((avatar) => {
+    const unlocked = isAvatarUnlocked(avatar);
+    const selected = avatar.id === selectedId;
+    return `
+      <button class="avatar-choice ${selected ? "selected" : ""} ${unlocked ? "" : "locked"}" data-avatar-id="${avatar.id}" type="button" ${unlocked ? "" : "disabled"}>
+        <span class="avatar-choice-preview ${avatar.className}" aria-hidden="true"></span>
+        <span>
+          <strong>${avatar.name}</strong>
+          <small>${unlocked ? avatar.description : `🔒 ${avatar.unlock.label}`}</small>
+        </span>
+      </button>
+    `;
+  }).join("");
+}
+
+function renderAvatarFrame(element, avatar, baseClass) {
+  if (!element || !avatar) return;
+  element.className = `${baseClass} ${avatar.className}`;
+  element.innerHTML = `<span class="avatar-crop" aria-hidden="true"></span>`;
+  element.setAttribute("aria-label", avatar.name);
 }
 
 export function renderSkillTree(ctx) {
@@ -119,11 +145,13 @@ export function renderSkillTree(ctx) {
       <article class="skill-card" data-skill="${skill}">
         <div class="skill-top">
           <div>
+            <span class="skill-icon">${skillIcon(skill)}</span>
             <h3>${config.name}</h3>
             <span class="tier-label">${skillTier(currentLevel)}</span>
           </div>
-          <span class="level-badge">Level ${currentLevel}</span>
+          <div class="progress-ring small" style="--value:${progress}"><strong>${progress}%</strong></div>
         </div>
+        <span class="level-badge">Level ${currentLevel}</span>
         <div class="skill-bar"><span style="width: ${progress}%"></span></div>
         <div class="xp-note">${progress}% to next level</div>
         <div class="skill-detail">
@@ -141,6 +169,18 @@ export function renderSkillTree(ctx) {
       </article>
     `;
   }).join("");
+}
+
+function skillIcon(skill) {
+  const icons = {
+    distanceControl: "↔",
+    timing: "◷",
+    bladeWork: "▰",
+    tacticalIq: "◎",
+    matchExperience: "⚔",
+    mentalGame: "✦"
+  };
+  return icons[skill] || "•";
 }
 
 export function showProfileSetupIfNeeded(ctx) {

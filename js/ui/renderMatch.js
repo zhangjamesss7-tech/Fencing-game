@@ -3,6 +3,7 @@ import { els } from "./dom.js";
 export function setMatchView(view) {
   els.matchSetup.classList.toggle("hidden", view !== "setup");
   els.matchGame.classList.toggle("hidden", view !== "fight");
+  els.duelGame.classList.toggle("hidden", view !== "duel");
   els.matchAnalysis.classList.toggle("hidden", view !== "analysis");
 }
 
@@ -19,7 +20,8 @@ export function renderMatch(ctx) {
     analyzeOpponent,
     buildMemoryList,
     renderSequenceBuilder,
-    renderLearningPanels
+    renderLearningPanels,
+    finalActionFromSequence
   } = ctx;
   const m = state.match;
   const analysis = analyzeOpponent();
@@ -36,15 +38,20 @@ export function renderMatch(ctx) {
   els.matchDistanceName.textContent = distanceNames[distanceKey];
   els.youFencer.style.left = `${8 + (5 - m.distance) * 5.5}%`;
   els.themFencer.style.right = `${8 + (5 - m.distance) * 5.5}%`;
+  els.youFencer.dataset.intent = actionVisualLabel(finalActionFromSequence(m.sequence || []));
+  els.themFencer.dataset.intent = actionVisualLabel(m.pendingAiAction || m.lastAiAction || "Observe");
   els.opponentTitle.textContent = "Unknown Opponent";
   els.opponentAnalysis.textContent = analysis.label;
   els.analysisConfidence.textContent = `${analysis.confidence}%`;
   els.memoryList.innerHTML = buildMemoryList().map((item) => `<li>${item}</li>`).join("");
   els.aiAdjustment.textContent = m.lastAdjustment;
   if (m.situation) {
-    els.aiBehaviour.textContent = m.liveCue || (m.learningMode === "advanced" ? "Watch the feet and blade" : m.situation.behaviour);
+    els.aiBehaviour.innerHTML = opponentCueMarkup(m.liveCue || (m.learningMode === "advanced" ? "Watch the feet and blade" : m.situation.behaviour));
     els.aiPattern.textContent = m.learningMode === "beginner" ? m.situation.pattern : "Infer from exchanges";
     els.matchSituation.textContent = `Distance: ${distanceNames[distanceKey]}. ${m.situation.prompt}`;
+  }
+  if (els.matchEventTimeline) {
+    els.matchEventTimeline.innerHTML = matchTimelineMarkup(m);
   }
   renderSequenceBuilder();
   renderLearningPanels();
@@ -67,8 +74,14 @@ export function renderSequenceBuilder(ctx) {
   const risk = sequenceRisk(sequence);
   els.sequenceCount.textContent = shortPlanHint(sequence);
   els.sequenceList.innerHTML = sequence.length
-    ? sequence.map((action) => `<span>${action}</span>`).join("<b>→</b>")
-    : `<span class="empty-sequence">Prepare -> React -> Finish</span>`;
+    ? sequence.map((action) => sequenceChipMarkup(action, actionMeta(action))).join("<b class=\"sequence-arrow\">→</b>")
+    : `
+      <span class="sequence-chip ghost"><i>↔</i><span>Prepare</span></span>
+      <b class="sequence-arrow">→</b>
+      <span class="sequence-chip ghost"><i>◌</i><span>React</span></span>
+      <b class="sequence-arrow">→</b>
+      <span class="sequence-chip ghost"><i>◆</i><span>Finish</span></span>
+    `;
   els.commitmentText.textContent = riskLabel(risk);
   els.commitmentFill.style.width = `${Math.min(100, risk * 12)}%`;
   els.commitmentFill.classList.toggle("danger", risk >= 7);
@@ -93,6 +106,7 @@ export function renderSequenceBuilder(ctx) {
     btn.classList.toggle("recommended", actionCue(action) === "good");
     btn.classList.toggle("warning", actionCue(action) === "warn");
     btn.classList.toggle("finish-now", actionCue(action) === "finish");
+    btn.dataset.group = meta.group;
     btn.title = locked ? `Unlocks at drill level ${meta.unlock}` : `${meta.key} · ${meta.group}`;
   });
 }
@@ -116,4 +130,69 @@ export function renderLearningPanels(ctx) {
     : "<li>No exchanges yet.</li>";
   const analysis = analyzeOpponent();
   els.detectedPattern.textContent = `${detectPattern()} Confidence: ${analysis.confidence}%.`;
+}
+
+function sequenceChipMarkup(action, meta = {}) {
+  return `<span class="sequence-chip" data-group="${meta.group || "Preparation"}"><i>${actionIcon(action, meta.group)}</i><span>${action}</span></span>`;
+}
+
+function opponentCueMarkup(label = "Observing distance") {
+  const cue = opponentCue(label);
+  return `<span class="opponent-cue ${cue.tone}"><i>${cue.icon}</i><span>${label}</span></span>`;
+}
+
+function opponentCue(label = "") {
+  const text = label.toLowerCase();
+  if (text.includes("attack") || text.includes("press")) return { icon: "→", tone: "pressure" };
+  if (text.includes("retreat") || text.includes("withdraw")) return { icon: "←", tone: "withdraw" };
+  if (text.includes("feint") || text.includes("bait")) return { icon: "◇", tone: "deception" };
+  if (text.includes("wait") || text.includes("watch")) return { icon: "◌", tone: "hold" };
+  return { icon: "↔", tone: "neutral" };
+}
+
+function actionVisualLabel(action = "") {
+  if (["Lunge", "Step-Lunge", "Fleche", "Counterattack", "Parry-Riposte"].includes(action)) return "Attack line";
+  if (["Retreat", "Half Step Out"].includes(action)) return "Withdraw";
+  if (["Advance", "Half Step In"].includes(action)) return "Pressure";
+  if (["Feint", "Bait", "Beat", "Change Rhythm"].includes(action)) return "Prepare";
+  return "Ready";
+}
+
+function actionIcon(action = "", group = "") {
+  if (["Advance", "Half Step In"].includes(action)) return "→";
+  if (["Retreat", "Half Step Out"].includes(action)) return "←";
+  if (["Lunge", "Step-Lunge", "Fleche"].includes(action)) return "◆";
+  if (action === "Counterattack") return "↯";
+  if (action === "Parry-Riposte") return "⟲";
+  if (["Feint", "Bait"].includes(action)) return "◇";
+  if (action === "Beat") return "×";
+  if (action === "Change Rhythm") return "≈";
+  if (group === "Movement") return "↔";
+  if (group === "Finish") return "◆";
+  return "◌";
+}
+
+function matchTimelineMarkup(match) {
+  const events = match.history.slice(-4);
+  if (!events.length) {
+    return `
+      <div class="timeline-item active"><span>1</span><strong>Observe</strong></div>
+      <div class="timeline-item"><span>2</span><strong>Build Plan</strong></div>
+      <div class="timeline-item"><span>3</span><strong>Resolve</strong></div>
+    `;
+  }
+  return events.map((entry, index) => `
+    <div class="timeline-item ${index === events.length - 1 ? "active" : ""}">
+      <span>${match.history.length - events.length + index + 1}</span>
+      <strong>${resultIcon(entry.result)} ${entry.result}</strong>
+    </div>
+  `).join("");
+}
+
+function resultIcon(result = "") {
+  if (result.includes("TOUCH") || result.includes("SCORES")) return "◆";
+  if (result.includes("DOUBLE")) return "◇";
+  if (result.includes("MISS") || result.includes("SHORT")) return "↔";
+  if (result.includes("PUNISHED") || result.includes("OVER")) return "!";
+  return "•";
 }

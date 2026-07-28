@@ -89,6 +89,12 @@
             <option>Unsure</option>
           </select>
         </label>
+        <label>Avatar
+          <select id="profileAvatarInput">
+            <option value="classic-epee">Classic Epee Fencer</option>
+            <option value="mask-emblem">Mask Emblem</option>
+          </select>
+        </label>
       </div>
       <button class="primary-btn" type="submit">Create Profile</button>
     </form>
@@ -107,11 +113,18 @@
           <p class="eyebrow" id="welcomeLabel">Welcome Back</p>
           <h1>Master Epee.</h1>
           <p class="subtitle">Learn tactics. Train decisions. Improve your game.</p>
+          <div class="hero-visual" aria-hidden="true">
+            <span class="duel-figure">YOU</span>
+            <span class="visual-blade"></span>
+            <span class="visual-target"></span>
+            <span class="visual-blade reverse"></span>
+            <span class="duel-figure">OPP</span>
+          </div>
           <div class="quick-actions">
-            <button class="primary-btn" data-view="scenarios">Continue Training</button>
-            <button class="secondary-btn" data-view="scenarios">Start Scenario</button>
-            <button class="secondary-btn" data-view="flashcards">Review Cards</button>
-            <button class="secondary-btn" data-view="match">Fight Opponent</button>
+            <button class="primary-btn" data-view="scenarios">◇ Continue Training</button>
+            <button class="secondary-btn" data-view="scenarios">◎ Start Scenario</button>
+            <button class="secondary-btn" data-view="flashcards">▣ Review Cards</button>
+            <button class="secondary-btn" data-view="match">⚔ Fight Opponent</button>
           </div>
         </div>
         <aside class="progress-card home-card">
@@ -130,18 +143,47 @@
             <div><strong id="hubMastered">0</strong><span>Cards Mastered</span></div>
           </div>
           <div class="recommended-list">
-            <h3>Recommended Training</h3>
-            <button data-view="scenarios"><span>Tactical Scenario</span><strong>+15 XP</strong></button>
-            <button data-view="flashcards"><span>Review Flashcards</span><strong>+10 XP</strong></button>
-            <button data-view="match"><span>Match Simulator</span><strong>+50 XP</strong></button>
+            <h3>Recommended Next Step</h3>
+            <button id="pathRecommendedButton" data-view="scenarios">
+              <span>
+                <b id="pathRecommendedTitle">Tactical Scenario</b>
+                <small id="pathRecommendedDescription">Continue your active training path.</small>
+              </span>
+              <strong>Go</strong>
+            </button>
           </div>
         </aside>
       </div>
 
+      <section class="training-path-section">
+        <div class="path-heading">
+          <div>
+            <p class="eyebrow">Training Path</p>
+            <h2>Learn → Train → Fight → Improve</h2>
+          </div>
+          <label for="activePathSelect">Active Path
+            <select id="activePathSelect">
+              <option value="beginner">Beginner Epee Path</option>
+              <option value="intermediate">Intermediate Tactical Path</option>
+              <option value="advanced">Advanced Match Preparation Path</option>
+            </select>
+          </label>
+        </div>
+        <article class="active-path-panel">
+          <div class="split">
+            <strong id="activePathName">Beginner Epee Path</strong>
+            <span id="activePathProgress">0/6 steps</span>
+          </div>
+          <div class="bar compact-bar"><span id="activePathFill"></span></div>
+          <div class="path-steps" id="activePathSteps"></div>
+        </article>
+        <div class="path-card-grid" id="trainingPathCards"></div>
+      </section>
+
       <div class="feature-grid">
-        <article><span>🎯</span><h2>Tactical Training</h2><p>Analyze fencing situations.</p><button class="secondary-btn" data-view="scenarios">Start Training</button></article>
-        <article><span>🧠</span><h2>Knowledge</h2><p>Learn epee fundamentals.</p><button class="secondary-btn" data-view="guide">Study</button></article>
-        <article><span>⚔️</span><h2>Match Simulator</h2><p>Fight AI opponents.</p><button class="secondary-btn" data-view="match">Fight</button></article>
+        <article><span>◎</span><h2>Tactical Training</h2><p>Analyze fencing situations.</p><button class="secondary-btn" data-view="scenarios">Start Training</button></article>
+        <article><span>▣</span><h2>Knowledge</h2><p>Learn epee fundamentals.</p><button class="secondary-btn" data-view="guide">Study</button></article>
+        <article><span>⚔</span><h2>Match Simulator</h2><p>Fight AI opponents.</p><button class="secondary-btn" data-view="match">Fight</button></article>
       </div>
     </section>
 
@@ -154,11 +196,12 @@
       <div class="profile-layout">
         <article class="profile-card-main">
           <div class="profile-header">
-            <div class="profile-icon" id="profileAvatar">🥉</div>
+            <div class="profile-avatar-frame avatar-classic" id="profileAvatar" aria-label="Profile avatar"></div>
             <div>
               <p class="eyebrow">Fencer Profile</p>
               <h2 id="profileName">Player Name</h2>
               <p id="profileSummary">Epee · Beginner · Tactical</p>
+              <button class="secondary-btn compact-btn" id="changeAvatarBtn" type="button">Change Avatar</button>
             </div>
           </div>
           <div class="profile-details">
@@ -170,14 +213,7 @@
             <div><span>XP</span><strong id="profileXp">0 / 100</strong></div>
           </div>
           <div class="bar profile-xp"><span id="profileXpFill"></span></div>
-          <label for="avatarSelect">Profile Avatar</label>
-          <select id="avatarSelect">
-            <option>Beginner Fencer</option>
-            <option>Tactical Fencer</option>
-            <option>Aggressive Fencer</option>
-            <option>Defensive Fencer</option>
-            <option>Champion Fencer</option>
-          </select>
+          <p class="avatar-current" id="avatarCurrentLabel">Classic Epee Fencer</p>
         </article>
 
         <article class="profile-card-main">
@@ -286,6 +322,9 @@
           <option>Intermediate</option>
           <option>Advanced</option>
         </select>
+        <select id="scenarioPack" aria-label="Scenario pack">
+          <option value="all">All Scenario Packs</option>
+        </select>
         <button class="ghost-btn" id="replayScenario">Replay Scenario</button>
       </div>
       <article class="trainer-card">
@@ -294,6 +333,7 @@
           <span id="scenarioDistance">Middle distance</span>
           <span id="scenarioStyle">Aggressive</span>
         </div>
+        <div class="scenario-visual" id="scenarioVisual"></div>
         <h3 id="scenarioSituation"></h3>
         <div class="options" id="scenarioOptions"></div>
         <div class="feedback" id="scenarioFeedback"></div>
@@ -313,6 +353,18 @@
           <p class="eyebrow">Match Setup</p>
           <h3>Configure your bout</h3>
         </div>
+        <label for="simulatorMode">Simulator Mode
+          <select id="simulatorMode">
+            <option value="ai">AI Match</option>
+            <option value="duel">Local Duel Mode</option>
+          </select>
+        </label>
+        <label for="duelTimerMode" class="hidden">Planning Timer
+          <select id="duelTimerMode">
+            <option value="off">Off</option>
+            <option value="15">15 seconds per player</option>
+          </select>
+        </label>
         <label for="matchMode">Match Mode
           <select id="matchMode">
             <option value="training">Training Match - unlimited practice</option>
@@ -362,9 +414,9 @@
           <div class="piste">
             <div class="piste-labels"><span>YOU</span><span>OPPONENT</span></div>
             <div class="strip">
-              <span class="fencer you" id="youFencer"><span class="body">🤺</span><span class="epee player-epee"></span></span>
+              <span class="fencer you" id="youFencer"><span class="body fencer-sprite" role="img" aria-label="Player epee fencer" data-sprite="🤺"><img class="sprite-fallback" src="./assets/fencer-sprite.png" alt=""><span class="emoji-fallback">🤺</span></span><span class="epee player-epee"></span></span>
               <span class="center-line"></span>
-              <span class="fencer them" id="themFencer"><span class="epee opponent-epee"></span><span class="body">🤺</span></span>
+              <span class="fencer them" id="themFencer"><span class="epee opponent-epee"></span><span class="body fencer-sprite" role="img" aria-label="Opponent epee fencer" data-sprite="🤺"><img class="sprite-fallback" src="./assets/fencer-sprite.png" alt=""><span class="emoji-fallback">🤺</span></span></span>
               <span class="touch-flash" id="touchFlash">TOUCH</span>
             </div>
             <div class="split"><strong id="matchDistance">Distance: 3</strong><span id="matchDistanceName">Middle distance</span></div>
@@ -373,6 +425,10 @@
             <span>Current opponent action</span>
             <strong id="aiBehaviour">Observing distance</strong>
           </div>
+          <details class="compact-extra-panel">
+            <summary>Event timeline</summary>
+            <div class="match-event-timeline" id="matchEventTimeline"></div>
+          </details>
           <div class="sequence-board">
             <div class="split">
               <strong>Current Plan</strong>
@@ -434,6 +490,81 @@
         </aside>
       </div>
 
+      <div class="match-layout duel-layout hidden" id="duelGame">
+        <article class="sim-card duel-card">
+          <div class="scoreboard">
+            <div><span>Player 1</span><strong id="duelP1Score">0</strong></div>
+            <div><span>Player 2</span><strong id="duelP2Score">0</strong></div>
+            <div><span>Exchange</span><strong id="duelExchange">1</strong></div>
+            <div><span>Tempo</span><strong id="duelTempo">Ready</strong></div>
+          </div>
+          <div class="piste">
+            <div class="piste-labels"><span>PLAYER 1</span><span>PLAYER 2</span></div>
+            <div class="strip">
+              <span class="fencer you" id="duelP1Fencer"><span class="body fencer-sprite" role="img" aria-label="Player 1 epee fencer" data-sprite="🤺"><img class="sprite-fallback" src="./assets/fencer-sprite.png" alt=""><span class="emoji-fallback">🤺</span></span><span class="epee player-epee"></span></span>
+              <span class="center-line"></span>
+              <span class="fencer them" id="duelP2Fencer"><span class="epee opponent-epee"></span><span class="body fencer-sprite" role="img" aria-label="Player 2 epee fencer" data-sprite="🤺"><img class="sprite-fallback" src="./assets/fencer-sprite.png" alt=""><span class="emoji-fallback">🤺</span></span></span>
+              <span class="touch-flash" id="duelTouchFlash">TOUCH</span>
+            </div>
+            <div class="split"><strong id="duelDistance">Distance: 3</strong><span id="duelDistanceName">Middle distance</span></div>
+          </div>
+          <div class="fight-intel duel-countdown">
+            <span id="duelPhaseLabel">Planning Phase</span>
+            <strong id="duelStatus">Player 1: Build your plan</strong>
+          </div>
+          <div class="duel-plans">
+            <div class="sequence-board">
+              <div class="split"><strong>Player 1 Plan</strong><span id="duelP1Action">Planning</span></div>
+              <div class="sequence-list" id="duelP1Plan"><span class="empty-sequence">Queue actions with A D Q E F B Space K R</span></div>
+            </div>
+            <div class="sequence-board">
+              <div class="split"><strong>Player 2 Plan</strong><span id="duelP2Action">Hidden</span></div>
+              <div class="sequence-list" id="duelP2Plan"><span class="empty-sequence">Queue actions with arrows O I U P Enter L ;</span></div>
+            </div>
+          </div>
+          <div class="duel-actions">
+            <button class="secondary-btn" data-duel-plan-action="Advance">Advance</button>
+            <button class="secondary-btn" data-duel-plan-action="Retreat">Retreat</button>
+            <button class="secondary-btn" data-duel-plan-action="Half Step In">Half Step In</button>
+            <button class="secondary-btn" data-duel-plan-action="Half Step Out">Half Step Out</button>
+            <button class="secondary-btn" data-duel-plan-action="Hold Distance">Hold Distance</button>
+            <button class="secondary-btn" data-duel-plan-action="Feint">Feint</button>
+            <button class="secondary-btn" data-duel-plan-action="Bait">Bait</button>
+            <button class="secondary-btn" data-duel-plan-action="Beat">Beat</button>
+            <button class="secondary-btn" data-duel-plan-action="Change Rhythm">Change Rhythm</button>
+            <button class="primary-btn" data-duel-plan-action="Lunge">Lunge</button>
+            <button class="primary-btn" data-duel-plan-action="Step-Lunge">Step-Lunge</button>
+            <button class="primary-btn" data-duel-plan-action="Fleche">Fleche</button>
+            <button class="primary-btn" data-duel-plan-action="Counterattack">Counterattack</button>
+            <button class="primary-btn" data-duel-plan-action="Parry-Riposte">Parry-Riposte</button>
+          </div>
+          <div class="sequence-controls duel-lock-controls">
+            <button class="primary-btn" id="lockDuelPlan">Lock Plan</button>
+            <button class="primary-btn hidden" id="duelPlayerReady">Player 2 Ready</button>
+            <button class="ghost-btn" id="clearDuelPlan">Clear Plan</button>
+          </div>
+          <p class="keyboard-hint">Hot-seat mode: each player builds up to 3 secret actions, locks the plan, then both plans reveal together. Keyboard works for the current planner: A/D/Q/E/F/B/Space/K/R, Shift+F fleche, Shift+Space step-lunge, Shift+B beat, C change rhythm, H hold distance.</p>
+        </article>
+        <aside class="opponent-panel duel-panel">
+          <h3>Local Duel</h3>
+          <p>First to 5 touches. Player 1 plans secretly, passes the device, then Player 2 plans secretly before both plans reveal.</p>
+          <div class="analysis-panel">
+            <h4>Event Log</h4>
+            <ol id="duelEventLog"></ol>
+          </div>
+          <div class="analysis-panel controls-reference">
+            <h4>Tempo Speeds</h4>
+            <ul>
+              <li>1 tempo: movement and preparation</li>
+              <li>2 tempos: lunge, step-lunge, parry-riposte</li>
+              <li>3 tempos: fleche</li>
+            </ul>
+          </div>
+          <p class="future-note">Online multiplayer will require a backend or WebSocket server and should be handled later.</p>
+          <button class="ghost-btn" id="resetDuel">Reset Duel</button>
+        </aside>
+      </div>
+
       <article class="match-analysis hidden" id="matchAnalysis">
         <p class="eyebrow">Exchange Result</p>
         <h3 id="analysisOutcome">Ready</h3>
@@ -467,9 +598,37 @@
         <article><span>Tactical Rating</span><strong id="progressRating">100%</strong></article>
         <article><span>Flashcards Mastered</span><strong id="progressMastered">0</strong></article>
       </div>
+      <article class="profile-card-main progress-paths">
+        <div class="split">
+          <div>
+            <p class="eyebrow">Training Path Progress</p>
+            <h3>Path Completion</h3>
+          </div>
+          <button class="secondary-btn" data-view="hub">Continue Training</button>
+        </div>
+        <div class="progress-path-list" id="progressTrainingPaths"></div>
+      </article>
       <button class="ghost-btn danger" id="resetAll">Reset All Progress</button>
     </section>
   </main>
+  <footer class="version-footer">Version 1.2 — Training Path Update</footer>
+
+  <div class="avatar-modal hidden" id="avatarModal" role="dialog" aria-modal="true" aria-labelledby="avatarModalTitle">
+    <article class="avatar-modal-card">
+      <div class="split">
+        <div>
+          <p class="eyebrow">Profile Avatar</p>
+          <h3 id="avatarModalTitle">Choose Your Avatar</h3>
+        </div>
+        <button class="ghost-btn icon-close" id="avatarCancelBtn" type="button" aria-label="Cancel avatar selection">×</button>
+      </div>
+      <div class="avatar-choice-grid" id="avatarChoiceGrid"></div>
+      <div class="avatar-actions">
+        <button class="ghost-btn" id="avatarCancelFooterBtn" type="button">Cancel</button>
+        <button class="primary-btn" id="avatarSaveBtn" type="button">Save Avatar</button>
+      </div>
+    </article>
+  </div>
 
   <script type="module" src="./js/main.js"></script>
 </body>
